@@ -9,74 +9,167 @@ env:
   NEXUS_HELM_REPO: ${{ secrets.NEXUS_HELM_REPO }}
   NEXUS_HELM_REPO_USER: ${{ secrets.NEXUS_HELM_REPO_USER }}
   NEXUS_HELM_REPO_PASSWORD: ${{ secrets.NEXUS_HELM_REPO_PASSWORD }}
-  SAUSAGE_STORE_NAMESPACE: YOUR_NAMESPACE
+  SAUSAGE_STORE_NAMESPACE: r-devops-magistracy-project-2sem-488181715
   KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
   VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+  CHART_DIR: sausage-store-chart/sausage-store
+  RELEASE_NAME: sausage-store
 
 jobs:
-  # Сборка и пуш образов в докерхаб:
+  # --- 1) Сборка и пуш образов в Docker Hub ---
   build_and_push_to_docker_hub:
-      name: Push Docker image to DockerHub
-      runs-on: ubuntu-latest
-      steps:
-        - name: Check out the repo
-          # Получение исходного кода из репозитория:
-          uses: actions/checkout@v3
-        - name: Set up Docker Buildx
-          # Установка сборщика контейнеров Docker:
-          uses: docker/setup-buildx-action@v2
-        - name: Login to Docker 
-          # Авторизация на Docker Hub:
-          uses: docker/login-action@v2
-          # При помощи with передаём в action параметры username и password:
-          with:
-            username: ${{ secrets.DOCKER_USER }}
-            password: ${{ secrets.DOCKER_PASSWORD }}
-            # Хорошо ли держать логин и пароль прямо в коде workflow?
-            # Нет, это нехорошо. Хранить пароль надо в Secrets.
-        - name: Push Backend to DockerHub
-          # Одновременный билд и пуш образа в Docker Hub:
-          uses: docker/build-push-action@v4
-          with:
-            # Параметр context: ./backend/ указывает, что нужный Dockerfile 
-            # находится в ./backend/
-            context: ./backend/
-            # Параметр push: true указывает, что образ нужно не только собрать,
-            # но и отправить на Docker Hub:
-            push: true
-            # В параметре tags задаётся название и тег для образа.
-            # Для каждого пересобранного образа 
-            # устанавливаем тег latest, чтобы потом
-            # на сервере и в docker-compose.yml не указывать версию образа:
-            tags: YOUR_DOCKERHUB/sausage-backend:latest
-            build-args: |
-              VERSION=${{ github.sha }}
-        - name: Push Frontend to DockerHub
-          uses: docker/build-push-action@v4
-          with:
-            context: ./frontend/
-            push: true
-            tags: YOUR_DOCKERHUB/sausage-frontend:latest
-        - name: Push Backend-report to DockerHub
-          uses: docker/build-push-action@v4
-          with:
-            context: ./backend-report/
-            push: true
-            tags: YOUR_DOCKERHUB/sausage-backend-report:latest
-  # Упаковываем helm-чарт и пушим его в Nexus
+    name: Push Docker image to DockerHub
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to Docker
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # Версию используем только для backend. Возьмём SHA коммита.
+      - name: Define version
+        id: vars
+        run: echo "VERSION=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & Push backend (multi-arch, VERSION=1.0.0)
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=1.0.0
+          tags: |
+            ${{ secrets.DOCKER_USER }}/sausage-backend:1.0.0
+
+
+      - name: Build & Push Frontend to DockerHub
+        uses: docker/build-push-action@v4
+        with:
+          context: ./frontend/
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ secrets.DOCKER_USER }}/sausage-frontend:latest
+
+      - name: Build & Push Backend-report to DockerHub
+        uses: docker/build-push-action@v4
+        with:
+          context: ./backend-report/
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ secrets.DOCKER_USER }}/sausage-backend-report:latest
+
+  # --- 2) Пакуем UMBRELLA и пушим в Nexus (helm-hosted) ---
   add_helm_chart_to_nexus:
-      name: Add Helm Chart To Nexus
-      runs-on: ubuntu-latest
-      needs: build_and_push_to_docker_hub
+    name: Add Helm Chart To Nexus
+    outputs:
+      chart_version: ${{ steps.chartver.outputs.CHART_VERSION }}
+    runs-on: ubuntu-latest
+    needs: build_and_push_to_docker_hub
 
-      steps:
-      #### Опишите необходимые шаги
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-  # Деплоим приложения в кластер Kubernetes с помощью helm-чарт
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          helm-version: v3.14.4
+
+      - name: Build dependencies (umbrella)
+        run: helm dependency build "${{ env.CHART_DIR }}"
+
+      - name: Lint umbrella
+        run: helm lint "${{ env.CHART_DIR }}"
+
+      - name: Define chart version
+        id: chartver
+        run: echo "CHART_VERSION=1.0.${GITHUB_RUN_NUMBER}" >> $GITHUB_OUTPUT
+
+      - name: Package umbrella
+        run: |
+           mkdir -p dist
+           helm package "${{ env.CHART_DIR }}" \
+           --version "${{ steps.chartver.outputs.CHART_VERSION }}" \
+           --app-version "${{ steps.chartver.outputs.CHART_VERSION }}" \
+           --destination dist
+
+      - name: Get packaged file name
+        id: chart
+        run: echo "file=$(ls dist/*.tgz)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload chart to Nexus (helm-hosted)
+        env:
+          URL: ${{ env.NEXUS_HELM_REPO }}
+          USER: ${{ env.NEXUS_HELM_REPO_USER }}
+          PASS: ${{ env.NEXUS_HELM_REPO_PASSWORD }}
+          FILE: ${{ steps.chart.outputs.file }}
+        run: |
+          set -euo pipefail
+          BN=$(basename "$FILE")
+          curl -fS -u "$USER:$PASS" \
+          -H "Content-Type: application/gzip" \
+          --upload-file "$FILE" \
+           "$URL/$BN"
+
   deploy_helm_chart_to_kubernetes:
       name: Deploy Helm Chart To Kubernetes
       runs-on: ubuntu-latest
       needs: add_helm_chart_to_nexus
 
       steps:
-      #### Опишите необходимые шаги
+        
+        - name: Setup Helm
+          uses: azure/setup-helm@v4
+          with:
+            helm-version: v3.14.4
+
+        - name: Prepare kubeconfig
+          run: |
+              mkdir -p $HOME/.kube
+              echo "${KUBE_CONFIG}" > $HOME/.kube/config
+              chmod 600 $HOME/.kube/config
+
+        - name: Helm repo add
+          run:  |
+              helm repo add nexus $NEXUS_HELM_REPO --username $NEXUS_HELM_REPO_USER --password $NEXUS_HELM_REPO_PASSWORD
+              helm repo update
+        
+        - name: Deploy umbrella chart
+          run: |
+              helm upgrade --install "${RELEASE_NAME}" "nexus/sausage-store" \
+              --namespace "${SAUSAGE_STORE_NAMESPACE}" \
+              --version "${{ needs.add_helm_chart_to_nexus.outputs.chart_version }}" \
+              --wait --timeout 10m
+
+        - name: Debug non-ready pods
+          if: always()
+          run: |
+            echo "=== Pods status ==="
+            kubectl -n "${SAUSAGE_STORE_NAMESPACE}" get pods -o wide
+
+            echo "=== Recent events ==="
+            kubectl -n "${SAUSAGE_STORE_NAMESPACE}" get events --sort-by=.lastTimestamp | tail -n 50
+
+            echo "=== Describe & logs for non-ready pods ==="
+            for pod in $(kubectl -n "${SAUSAGE_STORE_NAMESPACE}" get pods --no-headers | awk '$2 !~ /^[1-9]/ {print $1}'); do
+      
+              echo "------ $pod ------"
+              kubectl -n "${SAUSAGE_STORE_NAMESPACE}" describe pod "$pod" || true
+      
+              echo "--- Logs (current) ---"
+              kubectl -n "${SAUSAGE_STORE_NAMESPACE}" logs "$pod" || true
+            
+              echo "--- Logs (previous) ---"
+              kubectl -n "${SAUSAGE_STORE_NAMESPACE}" logs "$pod" --previous || true
+            
+              echo
+           
+            done

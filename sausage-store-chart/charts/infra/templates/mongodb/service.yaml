@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb-service
+  labels:
+    app: mongodb
+spec:
+  clusterIP: None
+  ports:
+    - port: {{ .Values.infra.mongodb.containerPort }}
+      targetPort: {{ .Values.infra.mongodb.containerPort }}
+      name: mongo
+  selector:
+    app: mongodb

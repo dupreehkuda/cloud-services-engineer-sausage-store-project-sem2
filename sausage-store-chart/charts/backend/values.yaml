@@ -1,0 +1,47 @@
+annotations:
+    path: /actuator/prometheus
+    port: "8080"
+    scrape: "true"
+env:
+    postgresUri: jdbc:postgresql://postgresql-service:5432/sausage-store
+    postgresUser: store
+    postgresPassword: storepassword
+    reportPath: /logs/reports
+    logPath: /logs
+service:
+    port: 8080
+revisionHistoryLimit: 15
+replicas: 1
+strategy:
+ type: RollingUpdate
+ rollingUpdate:
+    maxUnavailable: 1
+    maxSurge: 1
+image: dupreeh/sausage-backend:1.0.0
+imagePullPolicy: Always
+resources:
+    requests:
+      memory: "256Mi"
+      cpu: "500m"
+    limits:
+      memory: "512Mi"
+      cpu: "1"
+containerPort: 8080
+livenessProbe:
+  httpGet:
+    path: /actuator/health        
+    port: 8080                    
+  initialDelaySeconds: 30         
+  periodSeconds: 10               
+  timeoutSeconds: 5               
+  failureThreshold: 3             
+  successThreshold: 1      
+vpa:
+  enabled: true
+  updateMode: "Auto"         
+  minAllowed:                
+    cpu: "100m"
+    memory: "256Mi"
+  maxAllowed:               
+    cpu: "1"                 
+    memory: "512Mi"

@@ -16,6 +16,6 @@ spec:
           pathType: {{ .Values.ingress.pathType }}
           backend:
             service:
-              name: {{ .Release.Name }}-{{ .Chart.Name }}-service
+              name: {{ .Release.Name }}-{{ .Chart.Name }}
               port:
                 number: {{ .Values.service.port }}

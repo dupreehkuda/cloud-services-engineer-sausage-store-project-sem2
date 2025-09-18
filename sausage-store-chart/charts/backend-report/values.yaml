@@ -1,0 +1,32 @@
+env:
+    PORT: "8081"
+    DB:  mongodb://root:rootpassword@mongodb-service:27017/sausage-store?authSource=admin      
+strategy:
+    type: Recreate
+revisionHistoryLimit: 15
+annotations:
+    path: /actuator/prometheus
+    port: "8080"
+    scrape: "true"
+image: dupreeh/sausage-backend-report:latest
+imagePullPolicy: Always
+service:
+    port: 8082
+resources:
+    requests:
+      memory: "256Mi"
+      cpu: "500m"
+    limits:
+      memory: "256Mi"
+      cpu: "1"
+hpa:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    cpu:
+      enabled: true
+      averageUtilization: 50
+    memory:
+      enabled: false
+      averageUtilization: 70
